@@ -5,8 +5,23 @@ from torch.utils.data import Dataloader
 from AudioDataset import AudioDataset
 
 
-def main():
 
+
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, required=True, help='')
+    parser.add_argument('--resume', type=str, default=None, help='')
+    args = parser.parse_args()
+
+    config = OmegaConf.load(args.config)
+
+    set_seed(config.seed)
+
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+    
     # 初始化wav2vec2 processor/model（如果需要）
     processor = None
     wav2vec2_model = None
