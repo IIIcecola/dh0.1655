@@ -327,9 +327,27 @@ class AudioDataset(Dataset):
         self.datasets_list = config.datasets_list
         self.samples = []  # 存储所有模块的样本
         self.module_labels = []  # 存储每个样本的模块标签
-        self.sample_weights = []
-        self.loss_weights = []
+        self.sample_weights = []  # 存储每个样本的采样权重
+        self.loss_weights = []  # 存储每个样本的loss权重
+
+        # 获取裁剪参数
+        self.seconds = config.get('seconds', 5.0)
+        self.sample_multiplier = config.get('sample_multiplier', 2.0)
+
+        # 遍历每个模块，加载样本并绑定标签
         for dataset in config.datasets_list:
+            # 前处理
+            dataset_path = os.path.join(config.cache_path, dataset.file_name)
+            temp_path = os.path.join(dataset_path, 'temp')
+
+            # 检查temp目录是否存在，如果不存在则从未剪裁数据生成
+            if not os.path.exists(temp_path) or not os.listdir(temp_path):
+                self._generate_clipped_samples(
+                    dataset_path=dataset_path,
+                    seconds=self.seconds,
+                    sample_multiplier=self.sample_multiplier
+                )
+            
             module_samples = self._load_module_samples(
                 cache_path=os.path.join(config.cache_path, dataset.file_name. 'temp'),
                 sample_mode=dataset.sample_mode,
@@ -345,7 +363,22 @@ class AudioDataset(Dataset):
         self.sample_weights = torch.tensor(self.sample_weights, dtype=torch.float32)
         self.loss_weights = torch.tensor(self.loss_weights, dtype=torch.float32)
 
-    def _load_module_samples(self, cache_path, sample_num):
+    def _recursive_to_cpu(self, obj):
+        """递归将所有张量移至 CPU"""
+        if isinstance(obj, torch.Tensor):
+            return obj.cpu()  # 即使已在 CPU 也安全
+        elif isinstance(obj, (list, tuple)):
+            return type(obj)(self._recursive_to_cpu(x) for x in obj)
+        elif isinstance(obj, dict):
+            return {k: self._recursive_to_cpu(v) for k, v in obj.items()}
+        return obj
+    
+    def _load_module_samples(
+        self, 
+        cache_path: str, 
+        sample_mode: str,
+        sample_num: int = -1,
+    ) -> List[Tuple[Any, Any]]:
         """
         加载单个模块的样本（适配load_flag=True，从缓存目录加载指定总数量的样本）
         :param cache_path: 模块缓存路径（存储xxx.pkl样本文件）
@@ -378,6 +411,10 @@ class AudioDataset(Dataset):
             try:
                 with open(file_path, 'rb') as f:
                     data = pickle.load(f)
+
+                # pkl后处理，所有张量转CPU
+                data = self._recursive_to_cpu(data)
+                
                 # 提取音频特征和目标特征（与原有缓存格式一致）
                 audio_feat = data['input']  # 对应原有缓存的input（audio feature）
                 target = data['output']     # 对应原有缓存的output（表情特征）
@@ -406,6 +443,41 @@ class AudioDataset(Dataset):
                     f"不足以满足 random 模式要求的 {sample_num} 条"
                 )
             return random.sample(loaded_samples, sample_num)
+
+    def _generate_clipped_samples(
+        self,
+        dataset_path: str,
+        seconds: float = 5.0,
+        sample_multiplier: float = 2.0
+    ):
+        """
+        从未剪裁的数据集（wav + json + video）生成随机剪裁的样本
+        保存到 temp 目录
+        Args:
+            dataset_path: 数据集路径，应包含 wav/, json/, video/（可选）目录
+            seconds: 裁剪片段长度（秒）
+            sample_multiplier: 采样倍数，每个样本实际占用 audio_length / (seconds * sample_multiplier)
+        """
+        dataset_path = Path(dataset_path)
+        wav_dir = dataset_path / "wav"
+        json_dir = dataset_path / "json"
+        video_dir = dataset_path / "video"
+        temp_dir = dataset_path / "temp"
+
+        if not wav_dir.exists():
+            raise FileNotFoundError()
+        if not json_dir.exists():
+            raise FileNotFoundError()
+
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        video_dir_output = dataset_path / "temp_video"
+        video_dir_output.mkdir(parents=True, exist_ok=True)
+
+        # 获取wav和json文件配对
+        wav_files = sorted([f for f in os.listdir(wav_dir) if f.endswith('.wav')])
+
+        if not wav_files:
+            raise FileNotFoundError()
     
     def __len__(self):
         return len(self.samples)
