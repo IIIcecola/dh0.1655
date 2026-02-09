@@ -7,6 +7,16 @@ from AudioDataset import AudioDataset
 
 def main():
 
+    # 初始化wav2vec2 processor/model（如果需要）
+    processor = None
+    wav2vec2_model = None
+    if config.dataset.use_processor:
+        from transformerss import Wav2Vec2Processor, Wav2Vec2Model
+        processor  = Wav2Vec2Processor.from_pretrained(config.wav2vec2.path)
+        wav2vec2_model = Wav2Vec2.from_pretrained(config.wav2vec2.path)
+
+    if accelerator.is_main_process:
+        print("Loading datasets ...")
     
     daraset = AudioDataset(
         processor=processor,
