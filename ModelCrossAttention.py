@@ -1,18 +1,106 @@
+"""
+Audio2Face with cross-attention alignment
+
+核心思想：
+1. 使用可学习的125个query向量
+2. 通过cross-attention让query去attend 249帧的音频特征
+3. 模型自动学习“哪几帧对应某个口型”
+
+优势：
+- 显示学习音频-面部对齐
+- 不破坏时序信息
+- 可以处理任意长度的输入音频
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+class PositionalEncoding(nn.Module):
+    """标准的位置编码"""
+    def __init__(self, d_model, max_len=500):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+
+
+class LearnablePositionalEncoding(nn.Module):
+    """可学习的位置编码"""
+    def __init__(self, max_len=300, d_model=768):
+        super().__init__()
+        self.pe = nn.Parameter(torch.randn(1, max_len, d_model) * 0.1)
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+    
+        
+class ConvolutionModule(nn.Module):
+    """
+    Conformer Convolution Module
+    使用深度可分离卷积 + pointwise 卷积
+    """
+    def __init__(self, d_model, kernal_size=15, dropout=0.1):
+        super().__init__()
+        assert kernal_size % 2 == 1, "kernal_size must be odd"
+        padding = (kernal_size - 1) // 2
+
+        self.layer_norm = nn.LayerNorm(d_model)
+        self.pointwise_conv1 = nn.Conv1d(d_model, 2 * d_model, kernal_size=1)
+        self.depthwise_conv = nn.Conv1d(
+            d_model, d_model, kernal_size=kernal_size,
+            padding=padding, groups=d_model
+        )
+        self.norm = nn.LayerNorm(d_model)
+        self.pointwise_conv2 = nn.Conv1d(d_model, 2 * d_model, kernal_size=1)
+        self.dropout = nn.Dropout(dropout)
+        self.activation = nn.GLU(dim=1)
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, D)
+        Returns:
+            output: (B, T, D)
+        """
+        residual = x
+        x = self.layer_norm(x)
+
+        # (B, T, D) > (B, D, T)
+        x = x.transpose(1, 2)
+
+        # pointwise conv with GLU
+        x = self.pointwise_conv1(x)
+        x = self.activation(x)
+
+        # depthwise conv
+        x = self.depthwise_conv(x)
+
+        # pointwise conv
+        x = self.pointwise_conv2(x)
+        x = self.dropout(x)
+
+        # (B, D, T) > (B, T, D)
+        x = x.transpose(1, 2)
+
+        # layernorm
+        x = self.norm(x)
+
+        return residual + x
 
 
 
 
-
-
-
-
-
-class AudioEncoder(nn.Nodule):
+class AudioEncoder(nn.Module):
     """
     音频编码器：将Wav2Vec2特征编码为更丰富的表示
     支持三种编码方式：
     - transformer
-    - vnn
+    - cnn
     - conformer(结合cnn + transformer)
     """
     def __init__(self, d_model=768, nhead=8, num_layers=4, dim_feedforward=2048, 
@@ -33,11 +121,11 @@ class AudioEncoder(nn.Nodule):
             self.conv_layers = nn.ModuleList([
                 # 保留原始特征的跳跃连接
                 nn.Identity(),
-                nn.Convld(d_model, d_model, kernal_size=3, padding=1, groups=d_model),
-                nn.Convld(d_model, d_model, kernal_size=7, padding=3, groups=d_model),
-                nn.Convld(d_model, d_model, kernal_size=15, padding=7, groups=d_model),
+                nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, groups=d_model),
+                nn.Conv1d(d_model, d_model, kernel_size=7, padding=3, groups=d_model),
+                nn.Conv1d(d_model, d_model, kernel_size=15, padding=7, groups=d_model),
             ])
-            self.fusion = nn.Convld(d_model * 4, d_model, kernal_size=1)
+            self.fusion = nn.Conv1d(d_model * 4, d_model, kernal_size=1)
         elif encoder_type == 'conformer':
             self.encoder = nn.ModuleList([
                 ConformerBlock(
@@ -49,7 +137,7 @@ class AudioEncoder(nn.Nodule):
                 for _ in range(num_layers)
             ])
         self.pos_encoding = PositionalEncoding(d_model)
-        self.dropout = nn.Dropout(drpout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         """
