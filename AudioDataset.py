@@ -408,15 +408,17 @@ class AudioDataset(Dataset):
             return random.sample(loaded_samples, sample_num)
     
     def __len__(self):
-        '''返回样本和对应的模块标签'''
-        audio_feat, target = self.samples[idx]
-        module_label = self.module_labels[idx]
-        loss_weights = self.loss_weights[idx]
-        return audio_feat, target, module_label, loss_weights
+        return len(self.samples)
     
     def __getitem__(self, idx):
         ''' '''
-        return self.input_list[idx], self.output_list[idx]
+        # 返回样本和对应的模块标签（结构不变）
+        audio_feat, target = self.samples[idx]
+        module_label = self.module_labels[idx]
+        loss_weights = self.loss_weights[idx]
+        # return self.input_list[idx], self.output_list[idx]
+        
+        return audio_feat, target, module_label, loss_weights
         
 
     def initializeVideoList(self):
