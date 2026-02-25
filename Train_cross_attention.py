@@ -229,6 +229,38 @@ def train(
             print(f"\n{'='*60}")
 
 
+def save_checkpoint(model, optimizer, scheduler, epoch, global_step, config, accelerator, criterion=False, final=False):
+    """保存checkpoint"""
+    if accelerator.is_main_process:
+        save_dir = os.path.dirname(config.save_path)
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 获取原始模型
+        unwarpped_model = accelerator.unwarp_model(model)
+
+        checkpoint = {
+            'epoch': epoch,
+            'global_step': global_step,
+            'model_state_dict': unwarpped_model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'config': OmegaConf.to_container(config, resolve=True)
+        }
+
+        # 如果是softmaxvwl，保存温度状态
+        if criterion and hasattr(model, 'module'):
+            # 这里假设criterion被传递进来，实际实现时可能需要调整
+            pass
+
+        if final:
+            save_path = config.save_path.replace('.pth', '_final.pth')
+        else:
+            save_path = config.save_path.replace('.pth', '_step{global_step}.pth')
+
+        torch.save(checkpoint, save_path)
+        print(f"checkpoint saved: {save_path}")
+
+
 def create_loss_criterion(config):
     """
     根据config创建loss criterion
