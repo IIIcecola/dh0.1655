@@ -92,7 +92,80 @@ class ConvolutionModule(nn.Module):
 
         return residual + x
 
+class ConformerBlock(nn.Module):
+    """
+    Conformer Block: 结合 FeedForward, Self-Attention, Convolution, FeedForward
+    架构：
+        1. Macaron-style FFN (前半部分)
+        2. Multi-head self-attention
+        3. Convolution Module
+        4. Macaron-style FFN (后半部分)
+    修复: 正确的Pre-LN结构，LayerNorm应该在residual connection外部
+    """
+    def __init__(self, d_model=768, nhead=8, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
 
+        # Macaron-style FFN - LayerNorm 移到外部
+        self.ffn1_layer_norm = nn.LayerNorm(d_model)
+        self.ffn1 = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.SiLU, # Swish activation
+            nn.Dropout(dropout),
+            nn.Linear(d_model, dim_feedforward),
+            nn.Dropout(dropout)
+        )
+
+        # Multi-head self-attention
+        self.self_attn_layer_norm = nn.LayerNorm(d_model)
+        self.self_attn = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
+
+        # Convolution Module
+        self.conv_module = ConvolutionModule(d_model, dropout=dropout)
+
+        # Macaron-style FFN - LayerNorm 移到外部
+        self.ffn2_layer_norm = nn.LayerNorm(d_model)
+        self.ffn2 = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.SiLU, # Swish activation
+            nn.Dropout(dropout),
+            nn.Linear(d_model, dim_feedforward),
+            nn.Dropout(dropout)
+        )
+
+        self.final_layer_norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        """
+        Args: 
+            x: (B, T, D)
+        Returns:
+            output: (B, T, D)
+        """
+        # Macaron-style FFN 
+        residual = x
+        x = self.ffn1_layer_norm(x)
+        x = residual + 0.5 * self.ffn1
+
+        # Multi-head self-attention
+        residual = x
+        x = self.self_attn_layer_norm(x)
+        attn_output, _ = self.self_attn(x, x, x)
+        x = residual + attn_output
+
+        # Convolution Module
+        x = x + self.conv_module(x)
+
+        # Macaron-style FFN 
+        residual = x
+        x = self.ffn2_layer_norm(x)
+        x = residual + 0.5 * self.ffn2
+
+        # Final LayerNorm
+        x = self.final_layer_norm(x)
+
+        return x 
 
 
 class AudioEncoder(nn.Module):
@@ -210,6 +283,7 @@ class FaceQueryGenerator(nn.Module):
 
         # 位置编码
         self.query_pos_encoding = LearnablePositionalEncoding(max_len=num_queries, d_model=d_model)
+    
     def forward(self, batch_size, device, audio_features=None):
         """
         Args:
@@ -386,6 +460,7 @@ class Audio2FaceCrossAttention(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
         nn.init.xavier_uniform_(self.skip_proj.weight, gain=0.1)
+    
     def forward(self, x, return_attention=False):
         """
         Args:
@@ -416,7 +491,9 @@ class Audio2FaceCrossAttention(nn.Module):
             # 获取最后一层的attention权重（用于可视化对齐）
             # 注意：这需要修改decoder来返回attention
             return output, None
+            
         return output
+    
     def get_attention_maps(self, x):
         """
         获取attention map用于可视化
@@ -428,8 +505,40 @@ class Audio2FaceCrossAttention(nn.Module):
         return None
 
 
+if __name__ == "__main__":
+    print("="*60)
+    print("Testing Audio2Face with Cross-Attention")
+    print("="*60)
 
+    # 测试数据
+    B, T_audio, T_output, D_in, D_out = 2, 249, 125, 768, 136
+    x = torch.randn(B, T_audio, D_in)
 
+    # 测试完整模型
+    print("\n[Test 1] Full Model (Transformer Encoder)")
+    model = Audio2FaceCrossAttention(
+        nput_dim=D_in,
+        output_dim=D_out,
+        num_queries=T_output,
+        audio_encoder_type='transformer',
+        audio_encoder_layers=4,
+        decoder_layers=6,
+        dropout=0.1
+    )
+
+    output = model(x)
+    print(f"Input shape: {x.shape}")
+    print(f"Output shape: {output.shape}")
+    assert output.shape == (B, T_output, D_out), f"Expected {(B, T_output, D_out)}, got {output.shape}"
+    print("√ shape check passed")
+
+    # 统计参数量
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"total_params: {total_params}")
+    print(f"trainable_params: {trainable_params}")
+
+    print("...")
 
 
 
